@@ -1,4 +1,4 @@
-<h1 align="center">v-tooltip</h1>
+<h1 align="center">v-tooltip-next</h1>
 
 <p align="center">
 <img src="https://raw.githubusercontent.com/Akryum/v-tooltip/master/v-tooltip.png" width="247" height="172" alt="Screenshot"/>
@@ -59,16 +59,17 @@ This package offers two different usages: [directive](#directive) or [component]
 1. Install the plugin:
 
 ```
-npm install --save v-tooltip
+npm install --save @csii/v-tooltip-next
 ```
 
 2. Add the plugin into your app:
 
 ```javascript
-import Vue from 'vue'
-import VTooltip from 'v-tooltip'
+import {createApp} from 'vue'
+import VTooltip from '@csii/v-tooltip-next'
 
-Vue.use(VTooltip)
+const app = createApp()
+app.use(VTooltip)
 ```
 
 [More info on installation](#installation)
@@ -103,27 +104,29 @@ Vue.use(VTooltip)
 ## Npm
 
 ```
-npm install --save v-tooltip
+npm install --save @csii/v-tooltip-next
 ```
 
 Install the plugin into Vue:
 
 ```javascript
-import Vue from 'vue'
-import VTooltip from 'v-tooltip'
+import {createApp} from 'vue'
+import VTooltip from '@csii/v-tooltip-next'
 
-Vue.use(VTooltip)
+const app = createApp()
+app.use(VTooltip)
 ```
 
 Or use the directives and components directly:
 
 ```javascript
-import Vue from 'vue'
-import { VTooltip, VPopover, VClosePopover } from 'v-tooltip'
+import {createApp} from 'vue'
+import { VTooltip, VPopover, VClosePopover } from '@csii/v-tooltip-next'
 
-Vue.directive('tooltip', VTooltip)
-Vue.directive('close-popover', VClosePopover)
-Vue.component('v-popover', VPopover)
+const app = createApp({})
+app.directive('tooltip', VTooltip)
+app.directive('close-popover', VClosePopover)
+app.component('v-popover', VPopover)
 ```
 
 ## Browser
@@ -139,15 +142,16 @@ Include [v-tooltip](/dist/v-tooltip.min.js) in the page.
 Manually install the plugin into Vue:
 
 ```javascript
-Vue.use(VTooltip)
+const app = createApp()
+app.use(VTooltip)
 ```
 
 Or use the directives and components directly:
 
 ```javascript
-Vue.directive('tooltip', VTooltip.VTooltip)
-Vue.directive('close-popover', VTooltip.VClosePopover)
-Vue.component('v-popover', VTooltip.VPopover)
+app.directive('tooltip', VTooltip.VTooltip)
+app.directive('close-popover', VTooltip.VClosePopover)
+app.component('v-popover', VTooltip.VPopover)
 ```
 
 # Usage
@@ -517,14 +521,14 @@ The default global options are:
 You can change the options during install with the arguments:
 
 ```javascript
-import VTooltip from 'v-tooltip'
-Vue.use(VTooltip, options)
+import VTooltip from '@csii/v-tooltip-next'
+app.use(VTooltip, options)
 ```
 
 Or directly on package:
 
 ```javascript
-import VTooltip from 'v-tooltip'
+import VTooltip from '@csii/v-tooltip-next'
 // Set custom CSS class
 VTooltip.options.defaultClass = 'my-tooltip'
 ```
@@ -760,4 +764,4 @@ Bellow are some examples of style you need. [Here](https://github.com/Akryum/v-t
 
 ---
 
-LICENCE MIT - Created by Guillaume CHAU (@Akryum)
+LICENCE MIT - Created by Guillaume CHAU (@Akryum @jiahwa)

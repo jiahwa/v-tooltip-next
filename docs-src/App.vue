@@ -1,8 +1,8 @@
 <template>
   <div id="app">
     <header>
-      <h1>v-tooltip</h1>
-      <div class="command">npm install --save v-tooltip</div>
+      <h1>v-tooltip-next</h1>
+      <div class="command">npm install --save @csii/v-tooltip-next</div>
       <nav>
         <a href="https://github.com/Akryum/vue-tooltip"><img src="https://img.shields.io/github/stars/Akryum/vue-tooltip.svg?style=social&label=Star" /></a>
         <a href="https://www.npmjs.com/package/v-tooltip">
@@ -18,7 +18,7 @@
 
     <section class="more">
       <div class="section-content">
-        And much <a href="https://github.com/Akryum/v-tooltip#usage">More</a>!
+        And much <a href="https://github.com/jiahwa/v-tooltip-next#usage">More</a>!
       </div>
     </section>
   </div>

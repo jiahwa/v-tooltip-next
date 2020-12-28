@@ -51,13 +51,13 @@ function onTouchCancel (event) {
 }
 
 export default {
-  bind (el, { value, modifiers }) {
+  mounted (el, { value, modifiers }) {
     el.$_closePopoverModifiers = modifiers
     if (typeof value === 'undefined' || value) {
       addListeners(el)
     }
   },
-  update (el, { value, oldValue, modifiers }) {
+  updated (el, { value, oldValue, modifiers }) {
     el.$_closePopoverModifiers = modifiers
     if (value !== oldValue) {
       if (typeof value === 'undefined' || value) {
@@ -67,7 +67,7 @@ export default {
       }
     }
   },
-  unbind (el) {
+  unmounted (el) {
     removeListeners(el)
   },
 }
