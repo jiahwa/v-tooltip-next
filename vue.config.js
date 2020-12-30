@@ -27,10 +27,15 @@ module.exports = {
       .rule('vue')
       .use('vue-loader')
       .loader('vue-loader')
-      .tap(options => {
-        options.compilerOptions.preserveWhitespace = true
-        return options
+      .options({
+        preserveWhitespace: true
       })
+      // .tap(options => {
+      //   console.log('--------')
+      //   console.dir(options)
+      //   options.compilerOptions.preserveWhitespace = true
+      //   return options
+      // })
   },
 
   css: {

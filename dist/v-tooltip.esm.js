@@ -4964,6 +4964,8 @@ const createHook = (lifecycle) => (hook, target = currentInstance) =>
 // post-create lifecycle registrations are noops during SSR
  injectHook(lifecycle, hook, target);
 const onMounted = createHook("m" /* MOUNTED */);
+const onBeforeUnmount = createHook("bum" /* BEFORE_UNMOUNT */);
+const onUnmounted = createHook("um" /* UNMOUNTED */);
 // initial value for watchers to trigger on undefined initial values
 const INITIAL_WATCHER_VALUE = {};
 // implementation
@@ -5159,6 +5161,51 @@ function traverse(value, seen = new Set()) {
         }
     }
     return value;
+}
+
+const isKeepAlive = (vnode) => vnode.type.__isKeepAlive;
+function onDeactivated(hook, target) {
+    registerKeepAliveHook(hook, "da" /* DEACTIVATED */, target);
+}
+function registerKeepAliveHook(hook, type, target = currentInstance) {
+    // cache the deactivate branch check wrapper for injected hooks so the same
+    // hook can be properly deduped by the scheduler. "__wdc" stands for "with
+    // deactivation check".
+    const wrappedHook = hook.__wdc ||
+        (hook.__wdc = () => {
+            // only fire the hook if the target instance is NOT in a deactivated branch.
+            let current = target;
+            while (current) {
+                if (current.isDeactivated) {
+                    return;
+                }
+                current = current.parent;
+            }
+            hook();
+        });
+    injectHook(type, wrappedHook, target);
+    // In addition to registering it on the target instance, we walk up the parent
+    // chain and register it on all ancestor instances that are keep-alive roots.
+    // This avoids the need to walk the entire component tree when invoking these
+    // hooks, and more importantly, avoids the need to track child components in
+    // arrays.
+    if (target) {
+        let current = target.parent;
+        while (current && current.parent) {
+            if (isKeepAlive(current.parent.vnode)) {
+                injectToKeepAliveRoot(wrappedHook, type, target, current);
+            }
+            current = current.parent;
+        }
+    }
+}
+function injectToKeepAliveRoot(hook, type, target, keepAliveRoot) {
+    // injectHook wraps the original for error handling, so make sure to remove
+    // the wrapped version.
+    const injected = injectHook(type, hook, keepAliveRoot, true /* prepend */);
+    onUnmounted(() => {
+        remove(keepAliveRoot[type], injected);
+    }, target);
 }
 const queuePostRenderEffect =  queueEffectWithSuspense
     ;
@@ -6611,6 +6658,11 @@ var script = {
     var isOpen = ref(false);
     var id = ref(Math.random().toString(36).substr(2, 10));
     var popover = ref(null);
+    var arrow = ref(null);
+    var $_isDisposed = ref(false);
+    var $_mounted = ref(false);
+    var $_events = ref([]);
+    var $_preventOpen = ref(false);
     var cssClass = computed$1(function () {
       return _defineProperty({}, props.openClass, isOpen.value);
     });
@@ -6618,34 +6670,172 @@ var script = {
       return "popover_".concat(id.value);
     });
 
-    watch(function () {
-      return props.open;
-    }, function (val) {
-      if (val) {
-        _this.show();
-      } else {
-        _this.hide();
+    var $_removeEventListeners = function $_removeEventListeners() {
+      var reference = props.trigger;
+      $_events.value.forEach(function (_ref3) {
+        var func = _ref3.func,
+            event = _ref3.event;
+        reference.removeEventListener(event, func);
+      });
+      $_events.value = [];
+    };
+
+    var $_setTooltipNodeEvent = function $_setTooltipNodeEvent(event) {
+      var reference = props.trigger;
+      var popoverNode = popover.value;
+      var relatedreference = event.relatedreference || event.toElement || event.relatedTarget;
+
+      var callback = function callback(event2) {
+        var relatedreference2 = event2.relatedreference || event2.toElement || event2.relatedTarget; // Remove event listener after call
+
+        popoverNode.removeEventListener(event.type, callback); // If the new reference is not the reference element
+
+        if (!reference.contains(relatedreference2)) {
+          // Schedule to hide tooltip
+          hide({
+            event: event2
+          });
+        }
+      };
+
+      if (popoverNode.contains(relatedreference)) {
+        // listen to mouseleave on the tooltip element to be able to hide the tooltip
+        popoverNode.addEventListener(event.type, callback);
+        return true;
       }
-    });
-    watch(function () {
-      return props.disabled;
-    }, function (val) {
-      if (val !== oldVal) {
-        if (val) {
-          _this.hide();
-        } else if (_this.open) {
-          _this.show();
+
+      return false;
+    };
+
+    var $_scheduleTimer;
+
+    var $_scheduleShow = function $_scheduleShow() {
+      var skipDelay = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
+      clearTimeout($_scheduleTimer);
+
+      if (skipDelay) {
+        $_show();
+      } else {
+        // defaults to 0
+        var computedDelay = parseInt(props.delay && props.delay.show || props.delay || 0);
+        $_scheduleTimer = setTimeout($_show.bind(_this), computedDelay);
+      }
+    };
+
+    var $_scheduleHide = function $_scheduleHide() {
+      var event = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : null;
+      var skipDelay = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
+      clearTimeout($_scheduleTimer);
+
+      if (skipDelay) {
+        $_hide();
+      } else {
+        // defaults to 0
+        var computedDelay = parseInt(props.delay && props.delay.hide || props.delay || 0);
+        $_scheduleTimer = setTimeout(function () {
+          if (!isOpen.value) {
+            return;
+          } // if we are hiding because of a mouseleave, we must check that the new
+          // reference isn't the tooltip, because in this case we don't want to hide it
+
+
+          if (event && event.type === 'mouseleave') {
+            var isSet = $_setTooltipNodeEvent(event); // if we set the new event, don't hide the tooltip yet
+            // the new event will take care to hide it if necessary
+
+            if (isSet) {
+              return;
+            }
+          }
+
+          $_hide();
+        }, computedDelay);
+      }
+    };
+
+    var $_beingShowed = ref(false);
+
+    var show = function show() {
+      var _ref4 = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {},
+          event = _ref4.event,
+          _ref4$skipDelay = _ref4.skipDelay,
+          _ref4$force = _ref4.force,
+          force = _ref4$force === void 0 ? false : _ref4$force;
+
+      if (force || !props.disabled) {
+        $_scheduleShow(event);
+        emit('show');
+      }
+
+      emit('update:open', true);
+      $_beingShowed.value = true;
+      requestAnimationFrame(function () {
+        $_beingShowed.value = false;
+      });
+    };
+
+    var hide = function hide() {
+      var _ref5 = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {},
+          event = _ref5.event,
+          _ref5$skipDelay = _ref5.skipDelay;
+
+      $_scheduleHide(event);
+      emit('hide');
+      emit('update:open', false);
+    };
+
+    var popperInstance = ref(null);
+
+    var dispose = function dispose() {
+      $_isDisposed.value = true;
+      $_removeEventListeners();
+      hide({
+        skipDelay: true
+      });
+
+      if (popperInstance.value) {
+        popperInstance.value.destroy(); // destroy tooltipNode if removeOnDestroy is not set, as popperInstance.destroy() already removes the element
+
+        if (!popperInstance.value.options.removeOnDestroy) {
+          var popoverNode = popover.value;
+          popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode);
         }
       }
-    });
-    watch(function () {
-      return props.container;
-    }, function (val) {
-      if (_this.isOpen && _this.popperInstance) {
-        var popoverNode = popover.value;
-        var reference = _this.$refs.trigger;
 
-        var container = _this.$_findContainer(_this.container, reference);
+      $_mounted.value = false;
+      popperInstance.value = null;
+      isOpen.value = false;
+      emit('dispose');
+    };
+
+    var $_disposeTimer = ref(null);
+
+    var $_init = function $_init() {
+      if (props.trigger.indexOf('manual') === -1) {
+        $_addEventListeners();
+      }
+    };
+
+    var hidden = ref(null);
+
+    var $_show = function $_show() {
+      var reference = props.trigger;
+      var popoverNode = popover.value;
+      clearTimeout($_disposeTimer.value); // Already open
+
+      if (isOpen.value) {
+        return;
+      } // Popper is already initialized
+
+
+      if (popperInstance.value) {
+        isOpen.value = true;
+        popperInstance.value.enableEventListeners();
+        popperInstance.value.scheduleUpdate();
+      }
+
+      if (!$_mounted.value) {
+        var container = $_findContainer(props.container, reference);
 
         if (!container) {
           console.warn('No container for popover', _this);
@@ -6653,268 +6843,65 @@ var script = {
         }
 
         container.appendChild(popoverNode);
-
-        _this.popperInstance.scheduleUpdate();
-      }
-    });
-    watch(function () {
-      return props.trigger;
-    }, function (val) {
-      _this.$_removeEventListeners();
-
-      _this.$_addEventListeners();
-    });
-    watch(function () {
-      return props.placement;
-    }, function (val) {
-      _this.$_updatePopper(function () {
-        _this.popperInstance.options.placement = val;
-      });
-    });
-    watch(function () {
-      return props.offset;
-    }, function (val) {
-      $_restartPopper();
-    });
-    watch(function () {
-      return props.boundariesElement;
-    }, function (val) {
-      $_restartPopper();
-    });
-    watch(function () {
-      return props.popperOptions;
-    }, function (val) {
-      $_restartPopper();
-    }, {
-      deep: true
-    });
-    onMounted(function () {
-      var popoverNode = popover.value;
-      popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode);
-
-      _this.$_init();
-
-      if (_this.open) {
-        _this.show();
-      }
-    });
-    return {
-      isOpen: isOpen,
-      id: id,
-      popover: popover
-    };
-  },
-  // data () {
-  //   return {
-  //     isOpen: false,
-  //     id: Math.random().toString(36).substr(2, 10),
-  //   }
-  // },
-  // computed: {
-  //   cssClass () {
-  //     return {
-  //       [this.openClass]: this.isOpen,
-  //     }
-  //   },
-  //   popoverId () {
-  //     return `popover_${this.id}`
-  //   },
-  // },
-  watch: {// open (val) {
-    //   if (val) {
-    //     this.show()
-    //   } else {
-    //     this.hide()
-    //   }
-    // },
-    // disabled (val, oldVal) {
-    //   if (val !== oldVal) {
-    //     if (val) {
-    //       this.hide()
-    //     } else if (this.open) {
-    //       this.show()
-    //     }
-    //   }
-    // },
-    // container (val) {
-    //   if (this.isOpen && this.popperInstance) {
-    //     const popoverNode = popover.value
-    //     const reference = this.$refs.trigger
-    //     const container = this.$_findContainer(this.container, reference)
-    //     if (!container) {
-    //       console.warn('No container for popover', this)
-    //       return
-    //     }
-    //     container.appendChild(popoverNode)
-    //     this.popperInstance.scheduleUpdate()
-    //   }
-    // },
-    // trigger (val) {
-    //   this.$_removeEventListeners()
-    //   this.$_addEventListeners()
-    // },
-    // placement (val) {
-    //   this.$_updatePopper(() => {
-    //     this.popperInstance.options.placement = val
-    //   })
-    // },
-    // offset: '$_restartPopper',
-    // boundariesElement: '$_restartPopper',
-    // popperOptions: {
-    //   handler: '$_restartPopper',
-    //   deep: true,
-    // },
-  },
-  // created () {
-  //   this.$_isDisposed = false
-  //   this.$_mounted = false
-  //   this.$_events = []
-  //   this.$_preventOpen = false
-  // },
-  // mounted () {
-  //   const popoverNode = popover.value
-  //   popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode)
-  //   this.$_init()
-  //   if (this.open) {
-  //     this.show()
-  //   }
-  // },
-  deactivated: function deactivated() {
-    this.hide();
-  },
-  beforeDestroy: function beforeDestroy() {
-    this.dispose();
-  },
-  methods: {
-    // show ({ event, skipDelay = false, force = false } = {}) {
-    //   if (force || !this.disabled) {
-    //     this.$_scheduleShow(event)
-    //     this.$emit('show')
-    //   }
-    //   this.$emit('update:open', true)
-    //   this.$_beingShowed = true
-    //   requestAnimationFrame(() => {
-    //     this.$_beingShowed = false
-    //   })
-    // },
-    // hide ({ event, skipDelay = false } = {}) {
-    //   this.$_scheduleHide(event)
-    //   this.$emit('hide')
-    //   this.$emit('update:open', false)
-    // },
-    // dispose () {
-    //   this.$_isDisposed = true
-    //   this.$_removeEventListeners()
-    //   this.hide({ skipDelay: true })
-    //   if (this.popperInstance) {
-    //     this.popperInstance.destroy()
-    //     // destroy tooltipNode if removeOnDestroy is not set, as popperInstance.destroy() already removes the element
-    //     if (!this.popperInstance.options.removeOnDestroy) {
-    //       const popoverNode = popover.value
-    //       popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode)
-    //     }
-    //   }
-    //   this.$_mounted = false
-    //   this.popperInstance = null
-    //   this.isOpen = false
-    //   this.$emit('dispose')
-    // },
-    $_init: function $_init() {
-      if (this.trigger.indexOf('manual') === -1) {
-        this.$_addEventListeners();
-      }
-    },
-    $_show: function $_show() {
-      var _this2 = this;
-
-      var reference = this.$refs.trigger;
-      var popoverNode = popover.value;
-      clearTimeout(this.$_disposeTimer); // Already open
-
-      if (this.isOpen) {
-        return;
-      } // Popper is already initialized
-
-
-      if (this.popperInstance) {
-        this.isOpen = true;
-        this.popperInstance.enableEventListeners();
-        this.popperInstance.scheduleUpdate();
+        $_mounted.value = true;
       }
 
-      if (!this.$_mounted) {
-        var container = this.$_findContainer(this.container, reference);
-
-        if (!container) {
-          console.warn('No container for popover', this);
-          return;
-        }
-
-        container.appendChild(popoverNode);
-        this.$_mounted = true;
-      }
-
-      if (!this.popperInstance) {
-        var popperOptions = _objectSpread2(_objectSpread2({}, this.popperOptions), {}, {
-          placement: this.placement
+      if (!popperInstance.value) {
+        var popperOptions = _objectSpread2(_objectSpread2({}, props.popperOptions), {}, {
+          placement: props.placement
         });
 
         popperOptions.modifiers = _objectSpread2(_objectSpread2({}, popperOptions.modifiers), {}, {
           arrow: _objectSpread2(_objectSpread2({}, popperOptions.modifiers && popperOptions.modifiers.arrow), {}, {
-            element: this.$refs.arrow
+            element: arrow.value
           })
         });
 
-        if (this.offset) {
-          var offset = this.$_getOffset();
+        if (props.offset) {
+          var offset = $_getOffset();
           popperOptions.modifiers.offset = _objectSpread2(_objectSpread2({}, popperOptions.modifiers && popperOptions.modifiers.offset), {}, {
             offset: offset
           });
         }
 
-        if (this.boundariesElement) {
+        if (props.boundariesElement) {
           popperOptions.modifiers.preventOverflow = _objectSpread2(_objectSpread2({}, popperOptions.modifiers && popperOptions.modifiers.preventOverflow), {}, {
-            boundariesElement: this.boundariesElement
+            boundariesElement: props.boundariesElement
           });
         }
 
-        this.popperInstance = new Popper(reference, popoverNode, popperOptions); // Fix position
+        popperInstance.value = new Popper(reference, popoverNode, popperOptions); // Fix position
 
         requestAnimationFrame(function () {
-          if (_this2.hidden) {
-            _this2.hidden = false;
-
-            _this2.$_hide();
-
+          if (hidden.value) {
+            hidden.value = false;
+            $_hide();
             return;
           }
 
-          if (!_this2.$_isDisposed && _this2.popperInstance) {
-            _this2.popperInstance.scheduleUpdate(); // Show the tooltip
-
+          if (!$_isDisposed.value && popperInstance.value) {
+            popperInstance.value.scheduleUpdate(); // Show the tooltip
 
             requestAnimationFrame(function () {
-              if (_this2.hidden) {
-                _this2.hidden = false;
-
-                _this2.$_hide();
-
+              if (hidden.value) {
+                hidden.value = false;
+                $_hide();
                 return;
               }
 
-              if (!_this2.$_isDisposed) {
-                _this2.isOpen = true;
+              if (!$_isDisposed.value) {
+                isOpen.value = true;
               } else {
-                _this2.dispose();
+                dispose();
               }
             });
           } else {
-            _this2.dispose();
+            dispose();
           }
         });
       }
 
-      var openGroup = this.openGroup;
+      var openGroup = props.openGroup;
 
       if (openGroup) {
         var _popover;
@@ -6930,47 +6917,47 @@ var script = {
         }
       }
 
-      openPopovers.push(this);
-      this.$emit('apply-show');
-    },
-    $_hide: function $_hide() {
-      var _this3 = this;
+      openPopovers.push(_this);
+      emit('apply-show');
+    };
 
+    var $_hide = function $_hide() {
       // Already hidden
-      if (!this.isOpen) {
+      if (!isOpen.value) {
         return;
       }
 
-      var index = openPopovers.indexOf(this);
+      var index = openPopovers.indexOf(_this);
 
       if (index !== -1) {
         openPopovers.splice(index, 1);
       }
 
-      this.isOpen = false;
+      isOpen.value = false;
 
-      if (this.popperInstance) {
-        this.popperInstance.disableEventListeners();
+      if (popperInstance.value) {
+        popperInstance.value.disableEventListeners();
       }
 
-      clearTimeout(this.$_disposeTimer);
+      clearTimeout($_disposeTimer.value);
       var disposeTime = directive.options.popover.disposeTimeout || directive.options.disposeTimeout;
 
       if (disposeTime !== null) {
-        this.$_disposeTimer = setTimeout(function () {
+        $_disposeTimer.value = setTimeout(function () {
           var popoverNode = popover.value;
 
           if (popoverNode) {
             // Don't remove popper instance, just the HTML element
             popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode);
-            _this3.$_mounted = false;
+            $_mounted.value = false;
           }
         }, disposeTime);
       }
 
-      this.$emit('apply-hide');
-    },
-    $_findContainer: function $_findContainer(container, reference) {
+      emit('apply-hide');
+    };
+
+    var $_findContainer = function $_findContainer(container, reference) {
       // if container is a query, get the relative element
       if (typeof container === 'string') {
         container = window.document.querySelector(container);
@@ -6980,25 +6967,25 @@ var script = {
       }
 
       return container;
-    },
-    $_getOffset: function $_getOffset() {
-      var typeofOffset = _typeof(this.offset);
+    };
 
-      var offset = this.offset; // One value -> switch
+    var $_getOffset = function $_getOffset() {
+      var typeofOffset = _typeof(props.offset);
+
+      var offset = props.offset; // One value -> switch
 
       if (typeofOffset === 'number' || typeofOffset === 'string' && offset.indexOf(',') === -1) {
         offset = "0, ".concat(offset);
       }
 
       return offset;
-    },
-    $_addEventListeners: function $_addEventListeners() {
-      var _this4 = this;
+    };
 
-      var reference = this.$refs.trigger;
+    var $_addEventListeners = function $_addEventListeners() {
+      var reference = props.trigger;
       var directEvents = [];
       var oppositeEvents = [];
-      var events = typeof this.trigger === 'string' ? this.trigger.split(' ').filter(function (trigger) {
+      var events = typeof props.trigger === 'string' ? props.trigger.split(' ').filter(function (trigger) {
         return ['click', 'hover', 'focus'].indexOf(trigger) !== -1;
       }) : [];
       events.forEach(function (event) {
@@ -7022,22 +7009,21 @@ var script = {
 
       directEvents.forEach(function (event) {
         var func = function func(event) {
-          if (_this4.isOpen) {
+          if (isOpen.value) {
             return;
           }
 
           event.usedByTooltip = true;
-          !_this4.$_preventOpen && _this4.show({
+          !$_preventOpen.value && show({
             event: event
           });
-          _this4.hidden = false;
+          hidden.value = false;
         };
 
-        _this4.$_events.push({
+        $_events.value.push({
           event: event,
           func: func
         });
-
         reference.addEventListener(event, func);
       }); // schedule hide tooltip
 
@@ -7047,153 +7033,551 @@ var script = {
             return;
           }
 
-          _this4.hide({
+          hide({
             event: event
           });
-
-          _this4.hidden = true;
+          hidden.value = true;
         };
 
-        _this4.$_events.push({
+        $_events.value.push({
           event: event,
           func: func
         });
-
         reference.addEventListener(event, func);
       });
-    },
-    $_scheduleShow: function $_scheduleShow() {
-      var skipDelay = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
-      clearTimeout(this.$_scheduleTimer);
+    };
 
-      if (skipDelay) {
-        this.$_show();
-      } else {
-        // defaults to 0
-        var computedDelay = parseInt(this.delay && this.delay.show || this.delay || 0);
-        this.$_scheduleTimer = setTimeout(this.$_show.bind(this), computedDelay);
-      }
-    },
-    $_scheduleHide: function $_scheduleHide() {
-      var _this5 = this;
-
-      var event = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : null;
-      var skipDelay = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
-      clearTimeout(this.$_scheduleTimer);
-
-      if (skipDelay) {
-        this.$_hide();
-      } else {
-        // defaults to 0
-        var computedDelay = parseInt(this.delay && this.delay.hide || this.delay || 0);
-        this.$_scheduleTimer = setTimeout(function () {
-          if (!_this5.isOpen) {
-            return;
-          } // if we are hiding because of a mouseleave, we must check that the new
-          // reference isn't the tooltip, because in this case we don't want to hide it
-
-
-          if (event && event.type === 'mouseleave') {
-            var isSet = _this5.$_setTooltipNodeEvent(event); // if we set the new event, don't hide the tooltip yet
-            // the new event will take care to hide it if necessary
-
-
-            if (isSet) {
-              return;
-            }
-          }
-
-          _this5.$_hide();
-        }, computedDelay);
-      }
-    },
-    $_setTooltipNodeEvent: function $_setTooltipNodeEvent(event) {
-      var _this6 = this;
-
-      var reference = this.$refs.trigger;
-      var popoverNode = popover.value;
-      var relatedreference = event.relatedreference || event.toElement || event.relatedTarget;
-
-      var callback = function callback(event2) {
-        var relatedreference2 = event2.relatedreference || event2.toElement || event2.relatedTarget; // Remove event listener after call
-
-        popoverNode.removeEventListener(event.type, callback); // If the new reference is not the reference element
-
-        if (!reference.contains(relatedreference2)) {
-          // Schedule to hide tooltip
-          _this6.hide({
-            event: event2
-          });
-        }
-      };
-
-      if (popoverNode.contains(relatedreference)) {
-        // listen to mouseleave on the tooltip element to be able to hide the tooltip
-        popoverNode.addEventListener(event.type, callback);
-        return true;
-      }
-
-      return false;
-    },
-    $_removeEventListeners: function $_removeEventListeners() {
-      var reference = this.$refs.trigger;
-      this.$_events.forEach(function (_ref5) {
-        var func = _ref5.func,
-            event = _ref5.event;
-        reference.removeEventListener(event, func);
-      });
-      this.$_events = [];
-    },
-    $_updatePopper: function $_updatePopper(cb) {
-      if (this.popperInstance) {
+    var $_updatePopper = function $_updatePopper(cb) {
+      if (popperInstance.value) {
         cb();
-        if (this.isOpen) this.popperInstance.scheduleUpdate();
+        if (isOpen.value) popperInstance.value.scheduleUpdate();
       }
-    },
-    $_restartPopper: function $_restartPopper() {
-      if (this.popperInstance) {
-        var isOpen = this.isOpen;
-        this.dispose();
-        this.$_isDisposed = false;
-        this.$_init();
+    };
 
-        if (isOpen) {
-          this.show({
+    var $_restartPopper = function $_restartPopper() {
+      if (popperInstance.value) {
+        var _isOpen = _isOpen.value;
+        dispose();
+        $_isDisposed.value = false;
+        $_init();
+
+        if (_isOpen) {
+          show({
             skipDelay: true,
             force: true
           });
         }
       }
-    },
-    $_handleGlobalClose: function $_handleGlobalClose(event) {
-      var _this7 = this;
+    };
 
-      var touch = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
-      if (this.$_beingShowed) return;
-      this.hide({
-        event: event
-      });
-
-      if (event.closePopover) {
-        this.$emit('close-directive');
+    watch(function () {
+      return props.open;
+    }, function (val) {
+      if (val) {
+        show();
       } else {
-        this.$emit('auto-hide');
+        hide();
       }
+    });
+    watch(function () {
+      return props.disabled;
+    }, function (val) {
+      if (val !== oldVal) {
+        if (val) {
+          hide();
+        } else if (props.open) {
+          show();
+        }
+      }
+    });
+    watch(function () {
+      return props.container;
+    }, function (val) {
+      if (isOpen.value && popperInstance.value) {
+        var popoverNode = popover.value;
+        var reference = props.trigger;
+        var container = $_findContainer(props.container, reference);
 
-      if (touch) {
-        this.$_preventOpen = true;
-        setTimeout(function () {
-          _this7.$_preventOpen = false;
-        }, 300);
+        if (!container) {
+          console.warn('No container for popover', _this);
+          return;
+        }
+
+        container.appendChild(popoverNode);
+        popperInstance.value.scheduleUpdate();
       }
-    },
-    $_handleResize: function $_handleResize() {
-      if (this.isOpen && this.popperInstance) {
-        this.popperInstance.scheduleUpdate();
-        this.$emit('resize');
+    });
+    watch(function () {
+      return props.trigger;
+    }, function (val) {
+      $_removeEventListeners();
+      $_addEventListeners();
+    });
+    watch(function () {
+      return props.placement;
+    }, function (val) {
+      $_updatePopper(function () {
+        popperInstance.value.options.placement = val;
+      });
+    });
+    watch(function () {
+      return props.offset;
+    }, function (val) {
+      $_restartPopper();
+    });
+    watch(function () {
+      return props.boundariesElement;
+    }, function (val) {
+      $_restartPopper();
+    });
+    watch(function () {
+      return props.popperOptions;
+    }, function (val) {
+      $_restartPopper();
+    }, {
+      deep: true
+    });
+    onMounted(function () {
+      var popoverNode = popover.value;
+      popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode);
+      $_init();
+
+      if (props.open) {
+        show();
       }
-    }
-  }
+    });
+    onBeforeUnmount(function () {
+      dispose();
+    });
+    onDeactivated(function () {
+      hide();
+    });
+    return {
+      isOpen: isOpen,
+      id: id,
+      popover: popover,
+      arrow: arrow,
+      $_isDisposed: $_isDisposed,
+      $_mounted: $_mounted,
+      $_events: $_events,
+      $_preventOpen: $_preventOpen,
+      cssClass: cssClass,
+      popoverId: popoverId,
+      $_beingShowed: $_beingShowed,
+      popperInstance: popperInstance,
+      $_disposeTimer: $_disposeTimer,
+      hidden: hidden
+    };
+  } // data () {
+  //   return {
+  //     isOpen: false,
+  //     id: Math.random().toString(36).substr(2, 10),
+  //   }
+  // },
+  // computed: {
+  //   cssClass () {
+  //     return {
+  //       [this.openClass]: isOpen.value,
+  //     }
+  //   },
+  //   popoverId () {
+  //     return `popover_${this.id}`
+  //   },
+  // },
+  // watch: {
+  // open (val) {
+  //   if (val) {
+  //     show()
+  //   } else {
+  //     hide()
+  //   }
+  // },
+  // disabled (val, oldVal) {
+  //   if (val !== oldVal) {
+  //     if (val) {
+  //       hide()
+  //     } else if (this.open) {
+  //       show()
+  //     }
+  //   }
+  // },
+  // container (val) {
+  //   if (isOpen.value && popperInstance.value) {
+  //     const popoverNode = popover.value
+  //     const reference = props.trigger
+  //     const container = $_findContainer(props.container, reference)
+  //     if (!container) {
+  //       console.warn('No container for popover', this)
+  //       return
+  //     }
+  //     container.appendChild(popoverNode)
+  //     popperInstance.value.scheduleUpdate()
+  //   }
+  // },
+  // trigger (val) {
+  //   $_removeEventListeners()
+  //   $_addEventListeners()
+  // },
+  // placement (val) {
+  //   $_updatePopper(() => {
+  //     popperInstance.value.options.placement = val
+  //   })
+  // },
+  // offset: '$_restartPopper',
+  // boundariesElement: '$_restartPopper',
+  // popperOptions: {
+  //   handler: '$_restartPopper',
+  //   deep: true,
+  // },
+  // },
+  // created () {
+  //   $_isDisposed.value = false
+  //   $_mounted.value = false
+  //   $_events.value = []
+  //   $_preventOpen.value = false
+  // },
+  // mounted () {
+  //   const popoverNode = popover.value
+  //   popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode)
+  //   $_init()
+  //   if (this.open) {
+  //     show()
+  //   }
+  // },
+  // beforeDestroy () {
+  //   dispose()
+  // },
+  // methods: {
+  // show ({ event, skipDelay = false, force = false } = {}) {
+  //   if (force || !this.disabled) {
+  //     this.$_scheduleShow(event)
+  //     emit('show')
+  //   }
+  //   emit('update:open', true)
+  //   $_beingShowed.value = true
+  //   requestAnimationFrame(() => {
+  //     $_beingShowed.value = false
+  //   })
+  // },
+  // hide ({ event, skipDelay = false } = {}) {
+  //   this.$_scheduleHide(event)
+  //   emit('hide')
+  //   emit('update:open', false)
+  // },
+  // dispose () {
+  //   $_isDisposed.value = true
+  //   $_removeEventListeners()
+  //   hide({ skipDelay: true })
+  //   if (popperInstance.value) {
+  //     popperInstance.value.destroy()
+  //     // destroy tooltipNode if removeOnDestroy is not set, as popperInstance.destroy() already removes the element
+  //     if (!popperInstance.value.options.removeOnDestroy) {
+  //       const popoverNode = popover.value
+  //       popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode)
+  //     }
+  //   }
+  //   $_mounted.value = false
+  //   popperInstance.value = null
+  //   isOpen.value = false
+  //   emit('dispose')
+  // },
+  // $_init () {
+  //   if (props.trigger.indexOf('manual') === -1) {
+  //     $_addEventListeners()
+  //   }
+  // },
+  // $_show () {
+  //   const reference = props.trigger
+  //   const popoverNode = popover.value
+  //   clearTimeout($_disposeTimer.value)
+  //   // Already open
+  //   if (isOpen.value) {
+  //     return
+  //   }
+  //   // Popper is already initialized
+  //   if (popperInstance.value) {
+  //     isOpen.value = true
+  //     popperInstance.value.enableEventListeners()
+  //     popperInstance.value.scheduleUpdate()
+  //   }
+  //   if (!$_mounted.value) {
+  //     const container = $_findContainer(props.container, reference)
+  //     if (!container) {
+  //       console.warn('No container for popover', this)
+  //       return
+  //     }
+  //     container.appendChild(popoverNode)
+  //     $_mounted.value = true
+  //   }
+  //   if (!popperInstance.value) {
+  //     const popperOptions = {
+  //       ...props.popperOptions,
+  //       placement: props.placement,
+  //     }
+  //     popperOptions.modifiers = {
+  //       ...popperOptions.modifiers,
+  //       arrow: {
+  //         ...popperOptions.modifiers && popperOptions.modifiers.arrow,
+  //         element: arrow.value,
+  //       },
+  //     }
+  //     if (props.offset) {
+  //       const offset = $_getOffset()
+  //       popperOptions.modifiers.offset = {
+  //         ...popperOptions.modifiers && popperOptions.modifiers.offset,
+  //         offset,
+  //       }
+  //     }
+  //     if (props.boundariesElement) {
+  //       popperOptions.modifiers.preventOverflow = {
+  //         ...popperOptions.modifiers && popperOptions.modifiers.preventOverflow,
+  //         boundariesElement: props.boundariesElement,
+  //       }
+  //     }
+  //     popperInstance.value = new Popper(reference, popoverNode, popperOptions)
+  //     // Fix position
+  //     requestAnimationFrame(() => {
+  //       if (hidden.value) {
+  //         hidden.value = false
+  //         $_hide()
+  //         return
+  //       }
+  //       if (!$_isDisposed.value && popperInstance.value) {
+  //         popperInstance.value.scheduleUpdate()
+  //         // Show the tooltip
+  //         requestAnimationFrame(() => {
+  //           if (hidden.value) {
+  //             hidden.value = false
+  //             $_hide()
+  //             return
+  //           }
+  //           if (!$_isDisposed.value) {
+  //             isOpen.value = true
+  //           } else {
+  //             dispose()
+  //           }
+  //         })
+  //       } else {
+  //         dispose()
+  //       }
+  //     })
+  //   }
+  //   const openGroup = this.openGroup
+  //   if (openGroup) {
+  //     let popover
+  //     for (let i = 0; i < openPopovers.length; i++) {
+  //       popover = openPopovers[i]
+  //       if (popover.openGroup !== openGroup) {
+  //         popover.hide()
+  //         popover.$emit('close-group')
+  //       }
+  //     }
+  //   }
+  //   openPopovers.push(this)
+  //   emit('apply-show')
+  // },
+  // $_hide () {
+  //   // Already hidden
+  //   if (!isOpen.value) {
+  //     return
+  //   }
+  //   const index = openPopovers.indexOf(this)
+  //   if (index !== -1) {
+  //     openPopovers.splice(index, 1)
+  //   }
+  //   isOpen.value = false
+  //   if (popperInstance.value) {
+  //     popperInstance.value.disableEventListeners()
+  //   }
+  //   clearTimeout($_disposeTimer.value)
+  //   const disposeTime = directive.options.popover.disposeTimeout || directive.options.disposeTimeout
+  //   if (disposeTime !== null) {
+  //     $_disposeTimer.value = setTimeout(() => {
+  //       const popoverNode = popover.value
+  //       if (popoverNode) {
+  //         // Don't remove popper instance, just the HTML element
+  //         popoverNode.parentNode && popoverNode.parentNode.removeChild(popoverNode)
+  //         $_mounted.value = false
+  //       }
+  //     }, disposeTime)
+  //   }
+  //   emit('apply-hide')
+  // },
+  // $_findContainer (container, reference) {
+  //   // if container is a query, get the relative element
+  //   if (typeof container === 'string') {
+  //     container = window.document.querySelector(container)
+  //   } else if (container === false) {
+  //     // if container is `false`, set it to reference parent
+  //     container = reference.parentNode
+  //   }
+  //   return container
+  // },
+  // $_getOffset () {
+  //   const typeofOffset = typeof props.offset
+  //   let offset = props.offset
+  //   // One value -> switch
+  //   if (typeofOffset === 'number' || (typeofOffset === 'string' && offset.indexOf(',') === -1)) {
+  //     offset = `0, ${offset}`
+  //   }
+  //   return offset
+  // },
+  // $_addEventListeners () {
+  //   const reference = props.trigger
+  //   const directEvents = []
+  //   const oppositeEvents = []
+  //   const events = typeof props.trigger === 'string'
+  //     ? props.trigger
+  //       .split(' ')
+  //       .filter(
+  //         trigger => ['click', 'hover', 'focus'].indexOf(trigger) !== -1
+  //       )
+  //     : []
+  //   events.forEach(event => {
+  //     switch (event) {
+  //       case 'hover':
+  //         directEvents.push('mouseenter')
+  //         oppositeEvents.push('mouseleave')
+  //         break
+  //       case 'focus':
+  //         directEvents.push('focus')
+  //         oppositeEvents.push('blur')
+  //         break
+  //       case 'click':
+  //         directEvents.push('click')
+  //         oppositeEvents.push('click')
+  //         break
+  //     }
+  //   })
+  //   // schedule show tooltip
+  //   directEvents.forEach(event => {
+  //     const func = event => {
+  //       if (isOpen.value) {
+  //         return
+  //       }
+  //       event.usedByTooltip = true
+  //       !$_preventOpen.value && show({ event: event })
+  //       hidden.value = false
+  //     }
+  //     $_events.value.push({ event, func })
+  //     reference.addEventListener(event, func)
+  //   })
+  //   // schedule hide tooltip
+  //   oppositeEvents.forEach(event => {
+  //     const func = event => {
+  //       if (event.usedByTooltip) {
+  //         return
+  //       }
+  //       hide({ event: event })
+  //       hidden.value = true
+  //     }
+  //     $_events.value.push({ event, func })
+  //     reference.addEventListener(event, func)
+  //   })
+  // },
+  // $_scheduleShow (event = null, skipDelay = false) {
+  //   clearTimeout(this.$_scheduleTimer)
+  //   if (skipDelay) {
+  //     $_show()
+  //   } else {
+  //     // defaults to 0
+  //     const computedDelay = parseInt((props.delay && props.delay.show) || props.delay || 0)
+  //     this.$_scheduleTimer = setTimeout($_show.bind(this), computedDelay)
+  //   }
+  // },
+  // $_scheduleHide (event = null, skipDelay = false) {
+  //   clearTimeout(this.$_scheduleTimer)
+  //   if (skipDelay) {
+  //     $_hide()
+  //   } else {
+  //     // defaults to 0
+  //     const computedDelay = parseInt((props.delay && props.delay.hide) || props.delay || 0)
+  //     this.$_scheduleTimer = setTimeout(() => {
+  //       if (!isOpen.value) {
+  //         return
+  //       }
+  //       // if we are hiding because of a mouseleave, we must check that the new
+  //       // reference isn't the tooltip, because in this case we don't want to hide it
+  //       if (event && event.type === 'mouseleave') {
+  //         const isSet = this.$_setTooltipNodeEvent(event)
+  //         // if we set the new event, don't hide the tooltip yet
+  //         // the new event will take care to hide it if necessary
+  //         if (isSet) {
+  //           return
+  //         }
+  //       }
+  //       $_hide()
+  //     }, computedDelay)
+  //   }
+  // },
+  // $_setTooltipNodeEvent (event) {
+  //   const reference = props.trigger
+  //   const popoverNode = popover.value
+  //   const relatedreference = event.relatedreference || event.toElement || event.relatedTarget
+  //   const callback = event2 => {
+  //     const relatedreference2 = event2.relatedreference || event2.toElement || event2.relatedTarget
+  //     // Remove event listener after call
+  //     popoverNode.removeEventListener(event.type, callback)
+  //     // If the new reference is not the reference element
+  //     if (!reference.contains(relatedreference2)) {
+  //       // Schedule to hide tooltip
+  //       hide({ event: event2 })
+  //     }
+  //   }
+  //   if (popoverNode.contains(relatedreference)) {
+  //     // listen to mouseleave on the tooltip element to be able to hide the tooltip
+  //     popoverNode.addEventListener(event.type, callback)
+  //     return true
+  //   }
+  //   return false
+  // },
+  // $_removeEventListeners () {
+  //   const reference = props.trigger
+  //   $_events.value.forEach(({ func, event }) => {
+  //     reference.removeEventListener(event, func)
+  //   })
+  //   $_events.value = []
+  // },
+  // $_updatePopper (cb) {
+  //   if (popperInstance.value) {
+  //     cb()
+  //     if (isOpen.value) popperInstance.value.scheduleUpdate()
+  //   }
+  // },
+  // $_restartPopper () {
+  //   if (popperInstance.value) {
+  //     const isOpen = isOpen.value
+  //     dispose()
+  //     $_isDisposed.value = false
+  //     $_init()
+  //     if (isOpen) {
+  //       show({ skipDelay: true, force: true })
+  //     }
+  //   }
+  // },
+  // $_handleGlobalClose (event, touch = false) {
+  //   if ($_beingShowed.value) return
+  //   hide({ event: event })
+  //   if (event.closePopover) {
+  //     emit('close-directive')
+  //   } else {
+  //     emit('auto-hide')
+  //   }
+  //   if (touch) {
+  //     $_preventOpen.value = true
+  //     setTimeout(() => {
+  //       $_preventOpen.value = false
+  //     }, 300)
+  //   }
+  // },
+  // $_handleResize () {
+  //   if (isOpen.value && popperInstance.value) {
+  //     popperInstance.value.scheduleUpdate()
+  //     emit('resize')
+  //   }
+  // },
+  // },
+
 };
 
 if (typeof document !== 'undefined' && typeof window !== 'undefined') {
@@ -7241,28 +7625,28 @@ function render(_ctx, _cache, $props, $setup, $data, $options) {
   var _component_ResizeObserver = resolveComponent("ResizeObserver");
 
   return openBlock(), createBlock("div", {
-    class: ["v-popover", $options.cssClass]
+    class: ["v-popover", $setup.cssClass]
   }, [createVNode("div", {
     ref: "trigger",
     class: "trigger",
     style: {
       "display": "inline-block"
     },
-    "aria-describedby": $options.popoverId,
-    tabindex: $props.trigger.indexOf('focus') !== -1 ? 0 : undefined
+    "aria-describedby": $setup.popoverId,
+    tabindex: $setup.trigger.indexOf('focus') !== -1 ? 0 : undefined
   }, [renderSlot(_ctx.$slots, "default")], 8
   /* PROPS */
   , ["aria-describedby", "tabindex"]), createVNode("div", {
     ref: "popover",
-    id: $options.popoverId,
-    class: [$props.popoverBaseClass, $props.popoverClass, $options.cssClass],
+    id: $setup.popoverId,
+    class: [$props.popoverBaseClass, $props.popoverClass, $setup.cssClass],
     style: {
-      visibility: $data.isOpen ? 'visible' : 'hidden'
+      visibility: $setup.isOpen ? 'visible' : 'hidden'
     },
-    "aria-hidden": $data.isOpen ? 'false' : 'true',
+    "aria-hidden": $setup.isOpen ? 'false' : 'true',
     tabindex: $props.autoHide ? 0 : undefined,
     onKeyup: _cache[1] || (_cache[1] = withKeys(function ($event) {
-      return $props.autoHide && $options.hide();
+      return $props.autoHide && _ctx.hide();
     }, ["esc"]))
   }, [createVNode("div", {
     class: $props.popoverWrapperClass
@@ -7274,7 +7658,7 @@ function render(_ctx, _cache, $props, $setup, $data, $options) {
     }
   }, [createVNode("div", null, [renderSlot(_ctx.$slots, "popover")]), $props.handleResize ? (openBlock(), createBlock(_component_ResizeObserver, {
     key: 0,
-    onNotify: $options.$_handleResize
+    onNotify: _ctx.$_handleResize
   }, null, 8
   /* PROPS */
   , ["onNotify"])) : createCommentVNode("v-if", true)], 2

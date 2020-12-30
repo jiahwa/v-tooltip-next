@@ -73,6 +73,6 @@ add
 upgrade
 @vue/cli-plugin-unit-jest@4.x
 add
-typescript
+typescript@
 
 
