@@ -26,16 +26,14 @@ module.exports = {
     config.module
       .rule('vue')
       .use('vue-loader')
-      .loader('vue-loader')
-      .options({
-        preserveWhitespace: true
-      })
-      // .tap(options => {
-      //   console.log('--------')
-      //   console.dir(options)
-      //   options.compilerOptions.preserveWhitespace = true
-      //   return options
+      .loader('vue-loader-v16')
+      // .options({
+      //   preserveWhitespace: true
       // })
+      .tap(options => {
+        options.preserveWhitespace = true
+        return options
+      })
   },
 
   css: {

@@ -2,7 +2,7 @@
   <div class="code-snippet">
     <div class="language">{{ lang }}</div>
     <div class="line-numbers">
-      <div class="line-number" v-for="n in lineCount">{{ n }}</div>
+      <div class="line-number" v-for="n in lineCount" :key=n>{{ n }}</div>
     </div>
     <div class="render" v-html="result"></div>
   </div>

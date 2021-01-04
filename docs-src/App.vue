@@ -14,7 +14,7 @@
       <div class="description">Customizable &amp; reactive tooltips/popovers/dropdowns with smart positioning</div>
     </header>
 
-    <router-view />
+    <router-view></router-view>
 
     <section class="more">
       <div class="section-content">

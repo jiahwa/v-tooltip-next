@@ -7633,7 +7633,7 @@ function render(_ctx, _cache, $props, $setup, $data, $options) {
       "display": "inline-block"
     },
     "aria-describedby": $setup.popoverId,
-    tabindex: $setup.trigger.indexOf('focus') !== -1 ? 0 : undefined
+    tabindex: $props.trigger.indexOf('focus') !== -1 ? 0 : undefined
   }, [renderSlot(_ctx.$slots, "default")], 8
   /* PROPS */
   , ["aria-describedby", "tabindex"]), createVNode("div", {
